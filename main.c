@@ -1374,7 +1374,7 @@ static void drawBrowse(void) {
 
         int prefixW = hasPrefix ? 2 : 0;
         int valW = (int)strlen(vs) + (strlen(vs) > 0 ? 1 : 0);
-        int nameW = max_x - prefixW - valW - 2;
+        int nameW = max_x - prefixW - valW - 3;
         if (nameW < 8) nameW = 8;
 
         char nm[64];
