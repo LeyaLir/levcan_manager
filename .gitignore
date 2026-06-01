@@ -1,3 +1,5 @@
 ./can-browser
 ./can.log
 ./speedlink
+bin/
+build/
