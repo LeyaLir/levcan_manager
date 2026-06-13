@@ -51,8 +51,8 @@ LC_EXPORT void LC_Set_FileCallbacks(fOpen fopen, fTell ftell, fSeek flseek, fRea
 }
 
 int print_log(const char* format, ...) {
-    va_list args; va_start(args, format);
-    vfprintf(stdout, format, args); va_end(args); fflush(stdout);
+    // va_list args; va_start(args, format);
+    // vfprintf(stdout, format, args); va_end(args); fflush(stdout);
     return 0;
 }
 

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -41,7 +42,7 @@ intptr_t* linux_QueueCreate(uint32_t length, uint32_t itemSize) {
 
     struct mq_attr attr;
     attr.mq_flags = 0;
-    attr.mq_maxmsg = (length > 10) ? 10 : length; // Ограничение Linux по умолчанию (10)
+    attr.mq_maxmsg = (length > 10) ? 10 : length;
     attr.mq_msgsize = itemSize;
     attr.mq_curmsgs = 0;
 
@@ -112,7 +113,6 @@ void linux_QueueReset(void* queue) {
     }
 }
 
-// Инициализация физических указателей, которые требует ядро LEVCAN
 qCreate wrapper_QueueCreate = linux_QueueCreate;
 qDelete wrapper_QueueDelete = linux_QueueDelete;
 qReceive wrapper_QueueReceive = linux_QueueReceive;
@@ -141,18 +141,53 @@ int LC_HAL_InitSocketCAN(const char* ifname) {
     addr.can_family = AF_CAN;
     addr.can_ifindex = ifr.ifr_ifindex;
     if (bind(sktCAN, (struct sockaddr *)&addr, sizeof(addr)) < 0) { close(sktCAN); return -1; }
+    
+    int recv_own_msgs = 0;
+    setsockopt(sktCAN, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS, &recv_own_msgs, sizeof(recv_own_msgs));
+    
+    // printf("[HAL] SocketCAN initialized on %s (fd=%d)\n", ifname, sktCAN);
     return sktCAN;
 }
 
 LC_Return_t LC_HAL_Send(LC_HeaderPacked_t header, uint32_t* data, uint8_t length) {
     if (external_send != NULL) return (LC_Return_t)external_send(header.ToUint32, data, length);
     if (sktCAN < 0) return LC_ObjectError;
+    
     struct can_frame frame;
-    frame.can_id = header.ToUint32 | CAN_EFF_FLAG;
-    frame.can_dlc = length > 8 ? 8 : length;
-    if (data && length > 0) memcpy(frame.data, data, frame.can_dlc);
-    if (write(sktCAN, &frame, sizeof(struct can_frame)) == sizeof(struct can_frame)) return LC_Ok;
+    memset(&frame, 0, sizeof(frame));
+    
+    uint32_t can_id = header.ToUint32 & 0x1FFFFFFF;
+    frame.can_id = can_id | CAN_EFF_FLAG;
+    
+    if (header.ToUint32 & (1u << 29)) {
+        frame.can_id |= CAN_RTR_FLAG;
+        frame.can_dlc = length;
+    } else {
+        frame.can_dlc = length > 8 ? 8 : length;
+        if (data && length > 0) memcpy(frame.data, data, frame.can_dlc);
+    }
+    
+    if (write(sktCAN, &frame, sizeof(struct can_frame)) == sizeof(struct can_frame)) 
+        return LC_Ok;
     return LC_BufferFull;
+}
+
+void LC_HAL_ProcessReceive(LC_NodeDescriptor_t* node) {
+    if (!node || sktCAN < 0) return;
+    
+    struct can_frame frame;
+    ssize_t n = read(sktCAN, &frame, sizeof(struct can_frame));
+    
+    if (n == sizeof(struct can_frame)) {
+        if (frame.can_id & CAN_EFF_FLAG) {
+            LC_HeaderPacked_t header;
+            header.ToUint32 = frame.can_id & CAN_EFF_MASK;
+            if (frame.can_id & CAN_RTR_FLAG) {
+                header.ToUint32 |= (1u << 29);
+            }
+            LC_ReceiveHandler(node, header, (uint32_t*)frame.data, frame.can_dlc);
+        }
+    }
 }
 
 LC_Return_t LC_HAL_CreateFilterMasks(LC_HeaderPacked_t* reg, LC_HeaderPacked_t* mask, uint16_t count) {
@@ -163,15 +198,3 @@ LC_Return_t LC_HAL_CreateFilterMasks(LC_HeaderPacked_t* reg, LC_HeaderPacked_t* 
 LC_Return_t LC_HAL_HalfFull(void) { return LC_BufferEmpty; }
 void lc_enable_irq(void) { pthread_mutex_unlock(&ghMutex); }
 void lc_disable_irq(void) { pthread_mutex_lock(&ghMutex); }
-
-void LC_HAL_ProcessReceive(LC_NodeDescriptor_t* node) {
-    if (!node || sktCAN < 0) return;
-    struct can_frame frame;
-    if (read(sktCAN, &frame, sizeof(struct can_frame)) == sizeof(struct can_frame)) {
-        if (frame.can_id & CAN_EFF_FLAG) {
-            LC_HeaderPacked_t header;
-            header.ToUint32 = frame.can_id & CAN_EFF_MASK;
-            LC_ReceiveHandler(node, header, (uint32_t*)frame.data, frame.can_dlc);
-        }
-    }
-}
